@@ -46,26 +46,29 @@ export function Builder() {
   useEffect(() => {
     let originalFiles = [...files];
     let updateHappened = false;
+
     steps
       .filter(({ status }) => status === "pending")
-      .map((step) => {
+      .forEach((step) => {
         updateHappened = true;
+
         if (step?.type === StepType.CreateFile) {
-          let parsedPath = step.path?.split("/") ?? []; // ["src", "components", "App.tsx"]
-          let currentFileStructure = [...originalFiles]; // {}
+          let parsedPath = step.path?.split("/") ?? [];
+          let currentFileStructure = [...originalFiles];
           let finalAnswerRef = currentFileStructure;
 
           let currentFolder = "";
+
           while (parsedPath.length) {
             currentFolder = `${currentFolder}/${parsedPath[0]}`;
             let currentFolderName = parsedPath[0];
             parsedPath = parsedPath.slice(1);
 
             if (!parsedPath.length) {
-              // final file
               let file = currentFileStructure.find(
                 (x) => x.path === currentFolder,
               );
+
               if (!file) {
                 currentFileStructure.push({
                   name: currentFolderName,
@@ -77,50 +80,47 @@ export function Builder() {
                 file.content = step.code;
               }
             } else {
-              /// in a folder
               let folder = currentFileStructure.find(
                 (x) => x.path === currentFolder,
               );
+
               if (!folder) {
-                // create the folder
-                currentFileStructure.push({
+                folder = {
                   name: currentFolderName,
                   type: "folder",
                   path: currentFolder,
                   children: [],
-                });
+                };
+                currentFileStructure.push(folder);
               }
 
-              currentFileStructure = currentFileStructure.find(
-                (x) => x.path === currentFolder,
-              )!.children!;
+              currentFileStructure = folder.children!;
             }
           }
+
           originalFiles = finalAnswerRef;
         }
       });
 
     if (updateHappened) {
       setFiles(originalFiles);
+
       setSteps((steps) =>
-        steps.map((s: Step) => {
-          return {
-            ...s,
-            status: "completed",
-          };
-        }),
+        steps.map((s) =>
+          s.status === "pending" ? { ...s, status: "completed" } : s,
+        ),
       );
     }
-    console.log(files);
-  }, [steps, files]);
+  }, [steps]); // ✅ FIXED (removed files)
 
   useEffect(() => {
+    if (!files.length || !webcontainer) return;
+
     const createMountStructure = (files: FileItem[]): Record<string, any> => {
       const mountStructure: Record<string, any> = {};
 
       const processFile = (file: FileItem, isRootFolder: boolean) => {
         if (file.type === "folder") {
-          // For folders, create a directory entry
           mountStructure[file.name] = {
             directory: file.children
               ? Object.fromEntries(
@@ -139,7 +139,6 @@ export function Builder() {
               },
             };
           } else {
-            // For files, create a file entry with contents
             return {
               file: {
                 contents: file.content || "",
@@ -151,7 +150,6 @@ export function Builder() {
         return mountStructure[file.name];
       };
 
-      // Process each top-level file/folder
       files.forEach((file) => processFile(file, true));
 
       return mountStructure;
@@ -159,9 +157,9 @@ export function Builder() {
 
     const mountStructure = createMountStructure(files);
 
-    // Mount the structure if WebContainer is available
-    console.log(mountStructure);
-    webcontainer?.mount(mountStructure);
+    console.log("Mounting files:", mountStructure);
+
+    webcontainer.mount(mountStructure);
   }, [files, webcontainer]);
 
   async function init() {
@@ -370,7 +368,7 @@ export function Builder() {
               {activeTab === "code" ? (
                 <CodeEditor file={selectedFile} />
               ) : (
-                <PreviewFrame webContainer={webcontainer} files={files} />
+                <PreviewFrame webContainer={webcontainer}/>
               )}
             </div>
           </div>
