@@ -12,6 +12,8 @@ import { parseXml } from "../steps";
 import { useWebContainer } from "../hooks/useWebContainer";
 import { FileNode } from "@webcontainer/api";
 import { Loader } from "../components/Loader";
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
 
 const MOCK_FILE_CONTENT = `// This is a sample file content
 import React from 'react';
@@ -223,6 +225,33 @@ export function Builder() {
     init();
   }, []);
 
+  const downloadProject = async () => {
+    if (!files.length) {
+      alert("No project generated yet");
+      return;
+    }
+
+    const zip = new JSZip();
+
+    const addFiles = (items: FileItem[], folder: JSZip) => {
+      items.forEach((item) => {
+        if (item.type === "folder") {
+          const newFolder = folder.folder(item.name);
+          if (item.children && newFolder) {
+            addFiles(item.children, newFolder);
+          }
+        } else {
+          folder.file(item.name, item.content || "");
+        }
+      });
+    };
+
+    addFiles(files, zip);
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    saveAs(blob, "text-to-app.zip");
+  };
+
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col">
       <header className="bg-gray-800/80 backdrop-blur border-b border-gray-700 px-6 py-4 flex items-center justify-between">
@@ -236,9 +265,27 @@ export function Builder() {
 
         {/* Right side */}
         <div className="flex items-center gap-3">
+          {/* Download Button */}
+          <button
+            onClick={downloadProject}
+            className="text-sm bg-blue-500 hover:bg-blue-600 text-white px-3 py-1.5 rounded-md transition shadow"
+          >
+            Download
+          </button>
+
+          {/* Deploy Button */}
+          <button
+            onClick={() => window.open("https://vercel.com/new", "_blank")}
+            className="text-sm bg-purple-500 hover:bg-purple-600 px-3 py-1.5 rounded-md transition shadow"
+          >
+            Deploy
+          </button>
+
+          {/* Status */}
           <span className="text-xs text-gray-400 border border-gray-600 px-2 py-1 rounded-md">
             Live Build
           </span>
+
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
         </div>
       </header>
