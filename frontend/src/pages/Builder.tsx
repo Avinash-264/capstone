@@ -15,6 +15,64 @@ import { Loader } from "../components/Loader";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
 
+const extractDependencies = (code: string): string[] => {
+  const matches = [
+    ...(code.match(/from\s+["']([^"']+)["']/g) || []),
+    ...(code.match(/import\s+["']([^"']+)["']/g) || []),
+  ];
+
+  return matches
+    .map((m) => m.replace(/(from|import)\s+["']|["']/g, ""))
+    .filter((dep) => !dep.startsWith(".") && !dep.startsWith("/"));
+};
+
+const updatePackageJson = (
+  files: FileItem[],
+  newDeps: string[],
+): FileItem[] => {
+  return files.map((file) => {
+    if (file.name === "package.json" && file.type === "file") {
+      try {
+        const parsed = JSON.parse(file.content || "{}");
+
+        parsed.dependencies = parsed.dependencies || {};
+
+        newDeps.forEach((dep) => {
+          if (!parsed.dependencies[dep]) {
+            parsed.dependencies[dep] = "latest";
+          }
+        });
+
+        return {
+          ...file,
+          content: JSON.stringify(parsed, null, 2),
+        };
+      } catch {
+        return file;
+      }
+    }
+
+    return file;
+  });
+};
+
+const fixReactImport = (code: string, filePath: string) => {
+  const isReactFile = filePath.endsWith(".jsx") || filePath.endsWith(".tsx");
+
+  if (!isReactFile) return code;
+
+  // detect JSX usage (simple but effective)
+  const usesJSX = /return\s*\(?.*</.test(code);
+
+  const hasReactImport = /from\s+["']react["']/.test(code);
+
+  if (usesJSX && !hasReactImport) {
+    return `import React from "react";\n${code}`;
+  }
+
+  return code;
+};
+
 const MOCK_FILE_CONTENT = `// This is a sample file content
 import React from 'react';
 
@@ -25,6 +83,7 @@ function Component() {
 export default Component;`;
 
 export function Builder() {
+  const [lastDeps, setLastDeps] = useState<string[]>([]);
   const location = useLocation();
   const { prompt } = location.state as { prompt: string };
   const [userPrompt, setPrompt] = useState("");
@@ -46,6 +105,7 @@ export function Builder() {
   useEffect(() => {
     let originalFiles = [...files];
     let updateHappened = false;
+    let collectedDeps = new Set<string>();
 
     steps
       .filter(({ status }) => status === "pending")
@@ -69,15 +129,27 @@ export function Builder() {
                 (x) => x.path === currentFolder,
               );
 
+              const code = step.code || "";
+
+              // ✅ extract dependencies ONCE
+              const deps = extractDependencies(code);
+              deps.forEach((dep) => {
+                const baseDep = dep.startsWith("@")
+                  ? dep.split("/").slice(0, 2).join("/") // scoped packages
+                  : dep.split("/")[0]; // normal packages
+
+                collectedDeps.add(baseDep);
+              });
+
               if (!file) {
                 currentFileStructure.push({
                   name: currentFolderName,
                   type: "file",
                   path: currentFolder,
-                  content: step.code,
+                  content: fixReactImport(code, currentFolder),
                 });
               } else {
-                file.content = step.code;
+                file.content = fixReactImport(code, currentFolder);
               }
             } else {
               let folder = currentFileStructure.find(
@@ -103,6 +175,12 @@ export function Builder() {
       });
 
     if (updateHappened) {
+      // 👉 update package.json here
+      originalFiles = updatePackageJson(
+        originalFiles,
+        Array.from(collectedDeps),
+      );
+
       setFiles(originalFiles);
 
       setSteps((steps) =>
@@ -114,52 +192,79 @@ export function Builder() {
   }, [steps]); // ✅ FIXED (removed files)
 
   useEffect(() => {
-    if (!files.length || !webcontainer) return;
+    const run = async () => {
+      if (!files.length || !webcontainer) return;
 
-    const createMountStructure = (files: FileItem[]): Record<string, any> => {
-      const mountStructure: Record<string, any> = {};
+      const packageFile = files.find(
+        (f) => f.name === "package.json" && f.type === "file",
+      );
 
-      const processFile = (file: FileItem, isRootFolder: boolean) => {
-        if (file.type === "folder") {
-          mountStructure[file.name] = {
-            directory: file.children
-              ? Object.fromEntries(
-                  file.children.map((child) => [
-                    child.name,
-                    processFile(child, false),
-                  ]),
-                )
-              : {},
-          };
-        } else if (file.type === "file") {
-          if (isRootFolder) {
+      let currentDeps: string[] = [];
+
+      if (packageFile) {
+        try {
+          const parsed = JSON.parse(packageFile.content || "{}");
+          currentDeps = Object.keys(parsed.dependencies || {});
+        } catch {}
+      }
+
+      const depsChanged =
+        JSON.stringify([...currentDeps].sort()) !==
+        JSON.stringify([...lastDeps].sort());
+
+      const createMountStructure = (files: FileItem[]): Record<string, any> => {
+        const mountStructure: Record<string, any> = {};
+
+        const processFile = (file: FileItem, isRootFolder: boolean) => {
+          if (file.type === "folder") {
             mountStructure[file.name] = {
-              file: {
-                contents: file.content || "",
-              },
+              directory: file.children
+                ? Object.fromEntries(
+                    file.children.map((child) => [
+                      child.name,
+                      processFile(child, false),
+                    ]),
+                  )
+                : {},
             };
-          } else {
-            return {
-              file: {
-                contents: file.content || "",
-              },
-            };
+          } else if (file.type === "file") {
+            if (isRootFolder) {
+              mountStructure[file.name] = {
+                file: {
+                  contents: file.content || "",
+                },
+              };
+            } else {
+              return {
+                file: {
+                  contents: file.content || "",
+                },
+              };
+            }
           }
-        }
 
-        return mountStructure[file.name];
+          return mountStructure[file.name];
+        };
+
+        files.forEach((file) => processFile(file, true));
+
+        return mountStructure;
       };
 
-      files.forEach((file) => processFile(file, true));
+      const mountStructure = createMountStructure(files);
 
-      return mountStructure;
+      console.log("Mounting files:", mountStructure);
+
+      webcontainer.mount(mountStructure);
+      if (depsChanged) {
+        console.log("Dependencies changed → reinstalling...");
+
+        await webcontainer.spawn("npm", ["install"]);
+
+        setLastDeps(currentDeps);
+      }
     };
-
-    const mountStructure = createMountStructure(files);
-
-    console.log("Mounting files:", mountStructure);
-
-    webcontainer.mount(mountStructure);
+    run();
   }, [files, webcontainer]);
 
   async function init() {
