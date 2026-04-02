@@ -250,6 +250,55 @@ export function Builder() {
     saveAs(blob, "text-to-app.zip");
   };
 
+  const handleDeploy = async () => {
+    try {
+      if (!files.length) {
+        alert("No project to deploy");
+        return;
+      }
+
+      // 🔥 Convert your FileItem[] → backend format
+      const convertFiles = (
+        items: FileItem[],
+        basePath = "",
+      ): Record<string, { code: string }> => {
+        let result: Record<string, { code: string }> = {};
+
+        items.forEach((item) => {
+          const currentPath = basePath ? `${basePath}/${item.name}` : item.name;
+
+          if (item.type === "file") {
+            result[currentPath] = { code: item.content || "" };
+          } else if (item.type === "folder" && item.children) {
+            Object.assign(result, convertFiles(item.children, currentPath));
+          }
+        });
+
+        return result;
+      };
+
+      const formattedFiles = convertFiles(files);
+
+      console.log("FILES BEING SENT:", formattedFiles); // keep this
+
+      const res = await fetch(`${BACKEND_URL}/deploy`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ files: formattedFiles }),
+      });
+
+      const data = await res.json();
+
+      console.log("REPO URL:", data.repoUrl);
+
+      // 🚀 Redirect to Vercel import
+      window.open(`https://vercel.com/new/import?s=${data.repoUrl}`, "_blank");
+    } catch (err) {
+      console.error("Deploy failed:", err);
+    }
+  };
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col">
       <header className="bg-gray-800/80 backdrop-blur border-b border-gray-700 px-6 py-4 flex items-center justify-between">
@@ -273,7 +322,7 @@ export function Builder() {
 
           {/* Deploy Button */}
           <button
-            onClick={() => window.open("https://vercel.com/new", "_blank")}
+            onClick={handleDeploy}
             className="text-sm bg-purple-500 hover:bg-purple-600 px-3 py-1.5 rounded-md transition shadow"
           >
             Deploy
@@ -368,7 +417,7 @@ export function Builder() {
               {activeTab === "code" ? (
                 <CodeEditor file={selectedFile} />
               ) : (
-                <PreviewFrame webContainer={webcontainer}/>
+                <PreviewFrame webContainer={webcontainer} />
               )}
             </div>
           </div>

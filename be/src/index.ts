@@ -5,14 +5,23 @@ import { BASE_PROMPT, getSystemPrompt } from "./prompts";
 import { basePrompt as nodeBasePrompt } from "./defaults/node";
 import { basePrompt as reactBasePrompt } from "./defaults/react";
 import cors from "cors";
+import { Octokit } from "@octokit/rest";
 
 if (!process.env.GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY is missing");
 }
 
+if (!process.env.GITHUB_TOKEN) {
+  throw new Error("GITHUB_TOKEN is missing");
+}
+
 // ✅ NEW SDK
 const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY,
+});
+
+const octokit = new Octokit({
+  auth: process.env.GITHUB_TOKEN,
 });
 
 const app = express();
@@ -73,6 +82,55 @@ app.post("/chat", async (req, res) => {
     res.json({
         response: response.text,
     });
+});
+
+app.post("/deploy", async (req: any, res: any) => {
+  const files = req.body.files as Record<string, { code: string }>;
+
+  if (!files || typeof files !== "object") {
+    return res.status(400).json({ error: "Invalid files" });
+  }
+
+  const repoName = `ai-app-${Date.now()}`;
+
+  try {
+    // 1. Create repo
+    const { data: repo } =
+      await octokit.repos.createForAuthenticatedUser({
+        name: repoName,
+        private: false,
+      });
+    
+      console.log("Repo created:", repo.html_url);
+
+    const owner = repo.owner.login;
+
+    // ⏳ wait 2 seconds (critical)
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // 2. Upload files one by one
+    for (const [path, file] of Object.entries(files)) {
+      if (!file?.code) continue;
+
+      const cleanPath = path.replace(/\\/g, "/");
+
+      await octokit.repos.createOrUpdateFileContents({
+        owner,
+        repo: repoName,
+        path: cleanPath,
+        message: "initial commit",
+        content: Buffer.from(file.code).toString("base64"),
+      });
+    }
+
+    return res.json({
+      repoUrl: repo.html_url,
+    });
+
+  } catch (err) {
+    console.error("DEPLOY ERROR:", err);
+    return res.status(500).json({ error: "Deploy failed" });
+  }
 });
 
 const PORT = process.env.PORT || 8000;
